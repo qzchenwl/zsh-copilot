@@ -195,8 +195,8 @@ function _display_suggestions() {
         echo "{\"date\":\"$(date)\",\"log\":\"Display suggestions called\",\"selected_index\":\"$selected_index\"}" >> /tmp/zsh-copilot.log
     fi
     
-    # Build status message with all suggestions
-    local message="AI建议 (↑/↓导航, Enter选择, ESC取消): "
+    # Build multi-line status message using $'\n'
+    local message="AI建议 (↑/↓导航, Enter选择, ESC取消):"
     local i=0
     
     while IFS= read -r suggestion; do
@@ -204,15 +204,15 @@ function _display_suggestions() {
         local description=$(echo "$suggestion" | jq -r '.description')
         
         if [[ $i -eq $selected_index ]]; then
-            message+="[$((i+1))*$command] "
+            message+=$'\n'"▶ $((i+1)). $command - $description"
         else
-            message+="[$((i+1)).$command] "
+            message+=$'\n'"  $((i+1)). $command - $description"
         fi
         
         ((i++))
     done < <(echo "$suggestions_json" | jq -c '.suggestions[]')
     
-    # Use zle -M for status line display
+    # Use zle -M for multi-line display
     zle -M "$message"
     
     if [[ "$ZSH_COPILOT_DEBUG" == 'true' ]]; then
