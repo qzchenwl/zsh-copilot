@@ -138,7 +138,7 @@ function _fetch_suggestions() {
 
         # Debug: Log raw response for troubleshooting
         if [[ "$ZSH_COPILOT_DEBUG" == 'true' ]]; then
-            echo "{\"date\":\"$(date)\",\"log\":\"Raw API Response\",\"raw_response\":\"$(echo "$response" | head -c 500)\"}" >> /tmp/zsh-copilot.log
+            echo "$response" >> /tmp/zsh-copilot.log
         fi
 
         # Check if response is valid JSON and extract message from tool calls
@@ -152,7 +152,7 @@ function _fetch_suggestions() {
                 # Extract function call arguments
                 message=$(echo "$response" | jq -r '.choices[0].message.tool_calls[0].function.arguments')
                 if [[ "$ZSH_COPILOT_DEBUG" == 'true' ]]; then
-                    echo "{\"date\":\"$(date)\",\"log\":\"Extracted arguments\",\"arguments_preview\":\"$(echo "$message" | head -c 200)\"}" >> /tmp/zsh-copilot.log
+                    echo "{\"date\":\"$(date)\",\"log\":\"Extracted arguments\",\"arguments_preview\":\"$(echo "$message" | head -c 200)\",\"full_length\":\"${#message}\"}" >> /tmp/zsh-copilot.log
                 fi
                 if [[ -z "$message" || "$message" == "null" ]]; then
                     echo "Error: Empty function call arguments" > /tmp/.zsh_copilot_error
@@ -178,12 +178,27 @@ function _fetch_suggestions() {
         echo "{\"date\":\"$(date)\",\"log\":\"About to write message to file\",\"message_length\":\"${#message}\"}" >> /tmp/zsh-copilot.log
     fi
     
-    echo "$message" > /tmp/zsh_copilot_suggestion || {
+    # Validate message is valid JSON before writing
+    if ! echo "$message" | jq empty 2>/dev/null; then
         if [[ "$ZSH_COPILOT_DEBUG" == 'true' ]]; then
-            echo "{\"date\":\"$(date)\",\"log\":\"Failed to write message to file\"}" >> /tmp/zsh-copilot.log
+            echo "{\"date\":\"$(date)\",\"log\":\"Message is not valid JSON\",\"message\":\"$(echo "$message" | head -c 200)\"}" >> /tmp/zsh-copilot.log
         fi
+        echo "Error: Invalid JSON format in function arguments" > /tmp/.zsh_copilot_error
+        return 1
+    fi
+    
+    # Use printf for safer writing to handle special characters
+    printf "%s\n" "$message" > /tmp/zsh_copilot_suggestion || {
+        if [[ "$ZSH_COPILOT_DEBUG" == 'true' ]]; then
+            echo "{\"date\":\"$(date)\",\"log\":\"Failed to write message to file\",\"error\":\"$?\"}" >> /tmp/zsh-copilot.log
+        fi
+        echo "Error: Failed to write suggestion data" > /tmp/.zsh_copilot_error
         return 1
     }
+    
+    if [[ "$ZSH_COPILOT_DEBUG" == 'true' ]]; then
+        echo "{\"date\":\"$(date)\",\"log\":\"Successfully wrote message to file\"}" >> /tmp/zsh-copilot.log
+    fi
 }
 
 # Function to display suggestion selection interface
@@ -196,7 +211,7 @@ function _display_suggestions() {
     fi
     
     # Build multi-line status message with # separator
-    local message="AI建议 (↑/↓导航, Enter选择, ESC取消):"
+    local message="AI Suggestions (↑/↓ navigate, Enter select, ESC cancel):"
     local i=0
     
     while IFS= read -r suggestion; do
@@ -430,7 +445,13 @@ function _suggest_ai() {
         if [[ "$ZSH_COPILOT_DEBUG" == 'true' ]]; then
             echo "{\"date\":\"$(date)\",\"log\":\"Suggestion file not found\"}" >> /tmp/zsh-copilot.log
         fi
-        echo $(cat /tmp/.zsh_copilot_error 2>/dev/null || echo "No suggestion available at this time. Please try again later.")
+        local error_msg
+        if [[ -f /tmp/.zsh_copilot_error ]]; then
+            error_msg=$(cat /tmp/.zsh_copilot_error)
+        else
+            error_msg="No suggestion available at this time. Please try again later."
+        fi
+        zle -M "$error_msg"
         return 1
     fi
 
@@ -445,9 +466,10 @@ function _suggest_ai() {
     # Validate JSON format
     if ! echo "$message" | jq empty 2>/dev/null; then
         if [[ "$ZSH_COPILOT_DEBUG" == 'true' ]]; then
-            echo "{\"date\":\"$(date)\",\"log\":\"Invalid JSON format\",\"message\":\"$message\"}" >> /tmp/zsh-copilot.log
+            echo "{\"date\":\"$(date)\",\"log\":\"Invalid JSON format in main function\",\"message_preview\":\"$(echo "$message" | head -c 200)\"}" >> /tmp/zsh-copilot.log
+            echo "{\"date\":\"$(date)\",\"log\":\"Raw message for debugging\",\"message\":\"$message\"}" >> /tmp/zsh-copilot.log
         fi
-        echo "Error: Invalid JSON response from AI"
+        zle -M "Error: Invalid JSON response from AI"
         return 1
     fi
 
@@ -459,7 +481,7 @@ function _suggest_ai() {
     done < <(echo "$message" | jq -c '.suggestions[]')
 
     if [[ ${#suggestions_array[@]} -eq 0 ]]; then
-        echo "No suggestions available"
+        zle -M "No suggestions available"
         return 1
     fi
 
