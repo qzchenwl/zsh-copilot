@@ -11,44 +11,45 @@
 (( ! ${+ZSH_COPILOT_DEBUG} )) &&
     typeset -g ZSH_COPILOT_DEBUG=false
 
-# New option to select AI provider
-if [[ -z "$ZSH_COPILOT_AI_PROVIDER" ]]; then
-    if [[ -n "$OPENAI_API_KEY" ]]; then
-        typeset -g ZSH_COPILOT_AI_PROVIDER="openai"
-    elif [[ -n "$ANTHROPIC_API_KEY" ]]; then
-        typeset -g ZSH_COPILOT_AI_PROVIDER="anthropic"
-    else
-        echo "No AI provider selected. Please set either OPENAI_API_KEY or ANTHROPIC_API_KEY."
-        return 1
+# Selection state variables
+typeset -g ZSH_COPILOT_SUGGESTIONS=()
+typeset -g ZSH_COPILOT_SELECTED_INDEX=0
+typeset -g ZSH_COPILOT_SELECTION_MODE=false
+typeset -g ZSH_COPILOT_ORIGINAL_BUFFER=""
+
+# Helper function to safely clear autosuggestions
+function _safe_zsh_autosuggest_clear() {
+    if declare -f _zsh_autosuggest_clear > /dev/null; then
+        _zsh_autosuggest_clear
     fi
+}
+
+# Helper function to safely show autosuggestions
+function _safe_zsh_autosuggest_suggest() {
+    if declare -f _zsh_autosuggest_suggest > /dev/null; then
+        _zsh_autosuggest_suggest "$1"
+    else
+        # Fallback: display the suggestion manually
+        zle -M "Suggestion: $1"
+    fi
+}
+
+# Check for OpenAI API key
+if [[ -z "$ZSH_COPILOT_OPENAI_API_KEY" ]]; then
+    echo "Please set ZSH_COPILOT_OPENAI_API_KEY environment variable."
+    return 1
 fi
 
 # System prompt
 if [[ -z "$ZSH_COPILOT_SYSTEM_PROMPT" ]]; then
 read -r -d '' ZSH_COPILOT_SYSTEM_PROMPT <<- EOM
-  You will be given the raw input of a shell command. 
-  Your task is to either complete the command or provide a new command that you think the user is trying to type. 
-  If you return a completely new command for the user, prefix is with an equal sign (=). 
-  If you return a completion for the user's command, prefix it with a plus sign (+). 
-  MAKE SURE TO ONLY INCLUDE THE REST OF THE COMPLETION!!! 
-  Do not write any leading or trailing characters except if required for the completion to work. 
+  You are a shell command assistant. When given a partial or complete shell command input, you should provide 2-4 relevant command suggestions with explanations using the provide_command_suggestions function.
 
-  Only respond with either a completion or a new command, not both. 
-  Your response may only start with either a plus sign or an equal sign.
-  Your response MAY NOT start with both! This means that your response IS NOT ALLOWED to start with '+=' or '=+'.
-
-  Your response MAY NOT contain any newlines!
-  Do NOT add any additional text, comments, or explanations to your response.
-  Do not ask for more information, you won't receive it. 
-
-  Your response will be run in the user's shell. 
-  Make sure input is escaped correctly if needed so. 
-  Your input should be able to run without any modifications to it.
-  DO NOT INTERACT WITH THE USER IN NATURAL LANGUAGE! If you do, you will be banned from the system. 
-  Note that the double quote sign is escaped. Keep this in mind when you create quotes. 
-  Here are two examples: 
-    * User input: 'list files in current directory'; Your response: '=ls' (ls is the builtin command for listing files)
-    * User input: 'cd /tm'; Your response: '+p' (/tmp is the standard temp folder on linux and mac).
+  Rules for suggestions:
+  1. Provide 2-4 suggestions, ordered by relevance
+  2. For partial input, try to complete it first, then suggest alternatives
+  3. Each suggestion should have a clear, brief description (max 60 characters)
+  4. Commands should be complete and ready to execute
 EOM
 fi
 
@@ -60,26 +61,69 @@ function _fetch_suggestions() {
     local data
     local response
     local message
-
-    if [[ "$ZSH_COPILOT_AI_PROVIDER" == "openai" ]]; then
-        # OpenAI's API payload
-        data="{
-            \"model\": \"gpt-4o-mini\",
-            \"messages\": [
-                {
-                    \"role\": \"system\",
-                    \"content\": \"$full_prompt\"
-                },
-                {
-                    \"role\": \"user\",
-                    \"content\": \"$input\"
+        # Use jq to properly construct JSON payload with function calling
+        data=$(jq -n \
+            --arg model "gpt-4.1" \
+            --arg prompt "$full_prompt" \
+            --arg input "$input" \
+            '{
+                model: $model,
+                messages: [
+                    {
+                        role: "system",
+                        content: $prompt
+                    },
+                    {
+                        role: "user", 
+                        content: $input
+                    }
+                ],
+                tools: [
+                    {
+                        type: "function",
+                        function: {
+                            name: "provide_command_suggestions",
+                            description: "Provide shell command suggestions with explanations",
+                            parameters: {
+                                type: "object",
+                                properties: {
+                                                                    suggestions: {
+                                    type: "array",
+                                    items: {
+                                        type: "object",
+                                        properties: {
+                                            command: {
+                                                type: "string",
+                                                description: "The complete shell command"
+                                            },
+                                            description: {
+                                                type: "string",
+                                                description: "Brief explanation of what the command does"
+                                            }
+                                        },
+                                        required: ["command", "description"]
+                                    }
+                                }
+                                },
+                                required: ["suggestions"]
+                            }
+                        }
+                    }
+                ],
+                tool_choice: {
+                    type: "function",
+                    function: {
+                        name: "provide_command_suggestions"
+                    }
                 }
-            ]
-        }"
-        response=$(curl "https://${openai_api_url}/v1/chat/completions" \
+            }')
+        if [[ "$ZSH_COPILOT_DEBUG" == 'true' ]]; then
+            echo "$data" >> /tmp/zsh-copilot.log
+        fi
+        response=$(curl "https://${openai_api_url}/api/v1/chat/completions" \
             --silent \
             -H "Content-Type: application/json" \
-            -H "Authorization: Bearer $OPENAI_API_KEY" \
+            -H "Authorization: Bearer $ZSH_COPILOT_OPENAI_API_KEY" \
             -d "$data")
         response_code=$?
 
@@ -92,48 +136,224 @@ function _fetch_suggestions() {
             return 1
         fi
 
-        message=$(echo "$response" | tr -d '\n' | jq -r '.choices[0].message.content')
-    elif [[ "$ZSH_COPILOT_AI_PROVIDER" == "anthropic" ]]; then
-        # Anthropic's API payload
-        data="{
-            \"model\": \"claude-3-5-sonnet-latest\",
-            \"max_tokens\": 1000,
-            \"system\": \"$full_prompt\",
-            \"messages\": [
-                {
-                    \"role\": \"user\",
-                    \"content\": \"$input\"
-                }
-            ]
-        }"
-        response=$(curl "https://${anthropic_api_url}/v1/messages" \
-            --silent \
-            -H "Content-Type: application/json" \
-            -H "x-api-key: $ANTHROPIC_API_KEY" \
-            -H "anthropic-version: 2023-06-01" \
-            -d "$data")
-        response_code=$?
-
+        # Debug: Log raw response for troubleshooting
         if [[ "$ZSH_COPILOT_DEBUG" == 'true' ]]; then
-            echo "{\"date\":\"$(date)\",\"log\":\"Called Anthropic API\",\"input\":\"$input\",\"response\":\"$response\",\"response_code\":\"$response_code\"}" >> /tmp/zsh-copilot.log
+            echo "{\"date\":\"$(date)\",\"log\":\"Raw API Response\",\"raw_response\":\"$(echo "$response" | head -c 500)\"}" >> /tmp/zsh-copilot.log
         fi
 
-        if [[ $response_code -ne 0 ]] || [[ $(echo "$response" | jq -r '.type') == 'error' ]]; then
-            if [[ "$ZSH_COPILOT_DEBUG" == 'true' ]]; then
-                echo "{\"date\":\"$(date)\",\"log\":\"Error fetching Anthropic\"}" >> /tmp/zsh-copilot.log
+        # Check if response is valid JSON and extract message from tool calls
+        if echo "$response" | jq empty 2>/dev/null; then
+            # Check if there are tool calls (check if array exists and has elements)
+            local has_tool_calls=$(echo "$response" | jq -r '.choices[0].message.tool_calls | type == "array" and length > 0')
+            if [[ "$has_tool_calls" == "true" ]]; then
+                if [[ "$ZSH_COPILOT_DEBUG" == 'true' ]]; then
+                    echo "{\"date\":\"$(date)\",\"log\":\"Tool calls found\"}" >> /tmp/zsh-copilot.log
+                fi
+                # Extract function call arguments
+                message=$(echo "$response" | jq -r '.choices[0].message.tool_calls[0].function.arguments')
+                if [[ "$ZSH_COPILOT_DEBUG" == 'true' ]]; then
+                    echo "{\"date\":\"$(date)\",\"log\":\"Extracted arguments\",\"arguments_preview\":\"$(echo "$message" | head -c 200)\"}" >> /tmp/zsh-copilot.log
+                fi
+                if [[ -z "$message" || "$message" == "null" ]]; then
+                    echo "Error: Empty function call arguments" > /tmp/.zsh_copilot_error
+                    return 1
+                fi
+            else
+                # Fallback to regular content if no tool calls
+                message=$(echo "$response" | jq -r '.choices[0].message.content // empty')
+                if [[ "$ZSH_COPILOT_DEBUG" == 'true' ]]; then
+                    echo "{\"date\":\"$(date)\",\"log\":\"No tool calls, using content\",\"content_preview\":\"$(echo "$message" | head -c 200)\"}" >> /tmp/zsh-copilot.log
+                fi
+                if [[ -z "$message" || "$message" == "null" ]]; then
+                    echo "Error: Empty or invalid response from API" > /tmp/.zsh_copilot_error
+                    return 1
+                fi
             fi
-
-            echo "Error fetching suggestions from the Anthropic API. Please check your API key and try again." > /tmp/.zsh_copilot_error
+        else
+            echo "Error: Invalid JSON response from API" > /tmp/.zsh_copilot_error
             return 1
         fi
 
-        message=$(echo "$response" | tr -d '\n' | jq -r '.content[0].text')
-    else
-        echo "Invalid AI provider selected. Please choose 'openai' or 'anthropic'."
+    if [[ "$ZSH_COPILOT_DEBUG" == 'true' ]]; then
+        echo "{\"date\":\"$(date)\",\"log\":\"About to write message to file\",\"message_length\":\"${#message}\"}" >> /tmp/zsh-copilot.log
+    fi
+    
+    echo "$message" > /tmp/zsh_copilot_suggestion || {
+        if [[ "$ZSH_COPILOT_DEBUG" == 'true' ]]; then
+            echo "{\"date\":\"$(date)\",\"log\":\"Failed to write message to file\"}" >> /tmp/zsh-copilot.log
+        fi
+        return 1
+    }
+}
+
+# Function to display suggestion selection interface
+function _display_suggestions() {
+    local suggestions_json="$1"
+    local selected_index="$2"
+    
+    if [[ "$ZSH_COPILOT_DEBUG" == 'true' ]]; then
+        echo "{\"date\":\"$(date)\",\"log\":\"Display suggestions called\",\"selected_index\":\"$selected_index\"}" >> /tmp/zsh-copilot.log
+    fi
+    
+    # Build status message with all suggestions
+    local message="AI建议 (↑/↓导航, Enter选择, ESC取消): "
+    local i=0
+    
+    while IFS= read -r suggestion; do
+        local command=$(echo "$suggestion" | jq -r '.command')
+        local description=$(echo "$suggestion" | jq -r '.description')
+        
+        if [[ $i -eq $selected_index ]]; then
+            message+="[$((i+1))*$command] "
+        else
+            message+="[$((i+1)).$command] "
+        fi
+        
+        ((i++))
+    done < <(echo "$suggestions_json" | jq -c '.suggestions[]')
+    
+    # Use zle -M for status line display
+    zle -M "$message"
+    
+    if [[ "$ZSH_COPILOT_DEBUG" == 'true' ]]; then
+        echo "{\"date\":\"$(date)\",\"log\":\"Display completed\",\"suggestions_shown\":\"$i\"}" >> /tmp/zsh-copilot.log
+    fi
+}
+
+# Function to handle suggestion navigation
+function _handle_suggestion_navigation() {
+    if [[ "$ZSH_COPILOT_SELECTION_MODE" != "true" ]]; then
         return 1
     fi
+    
+    local key="$1"
+    local suggestions_count=${#ZSH_COPILOT_SUGGESTIONS[@]}
+    
+    case "$key" in
+        "down"|"ctrl_n")
+            ZSH_COPILOT_SELECTED_INDEX=$(( (ZSH_COPILOT_SELECTED_INDEX + 1) % suggestions_count ))
+            ;;
+        "up"|"ctrl_p")
+            ZSH_COPILOT_SELECTED_INDEX=$(( (ZSH_COPILOT_SELECTED_INDEX - 1 + suggestions_count) % suggestions_count ))
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+    
+    # Update buffer with selected command (ZSH arrays are 1-based)
+    local selected_suggestion="${ZSH_COPILOT_SUGGESTIONS[$((ZSH_COPILOT_SELECTED_INDEX + 1))]}"
+    BUFFER="$selected_suggestion"
+    CURSOR=${#BUFFER}
+    
+    # Redisplay interface with new selection
+    _display_suggestions "$(cat /tmp/zsh_copilot_suggestion)" "$ZSH_COPILOT_SELECTED_INDEX"
+}
 
-    echo "$message" > /tmp/zsh_copilot_suggestion || return 1
+# Function to exit selection mode
+function _exit_selection_mode() {
+    # Clear the status message
+    zle -M ""
+    
+    # Reset selection mode variables
+    ZSH_COPILOT_SELECTION_MODE=false
+    ZSH_COPILOT_SUGGESTIONS=()
+    ZSH_COPILOT_SELECTED_INDEX=0
+    
+    if [[ "$ZSH_COPILOT_DEBUG" == 'true' ]]; then
+        echo "{\"date\":\"$(date)\",\"log\":\"Exited selection mode\"}" >> /tmp/zsh-copilot.log
+    fi
+    
+    zle redisplay
+}
+
+# Navigation key bindings for selection mode
+function _copilot_down() {
+    if [[ "$ZSH_COPILOT_SELECTION_MODE" == "true" ]]; then
+        _handle_suggestion_navigation "down"
+    else
+        zle down-line-or-history
+    fi
+}
+
+function _copilot_up() {
+    if [[ "$ZSH_COPILOT_SELECTION_MODE" == "true" ]]; then
+        _handle_suggestion_navigation "up"
+    else
+        zle up-line-or-history
+    fi
+}
+
+function _copilot_ctrl_n() {
+    if [[ "$ZSH_COPILOT_SELECTION_MODE" == "true" ]]; then
+        _handle_suggestion_navigation "ctrl_n"
+    else
+        zle down-line-or-history
+    fi
+}
+
+function _copilot_ctrl_p() {
+    if [[ "$ZSH_COPILOT_SELECTION_MODE" == "true" ]]; then
+        _handle_suggestion_navigation "ctrl_p"
+    else
+        zle up-line-or-history
+    fi
+}
+
+function _copilot_accept_line() {
+    if [[ "$ZSH_COPILOT_SELECTION_MODE" == "true" ]]; then
+        _exit_selection_mode
+    fi
+    zle accept-line
+}
+
+function _copilot_escape() {
+    if [[ "$ZSH_COPILOT_SELECTION_MODE" == "true" ]]; then
+        # Restore original buffer and exit selection mode
+        BUFFER="$ZSH_COPILOT_ORIGINAL_BUFFER"
+        CURSOR=${#BUFFER}
+        _exit_selection_mode
+    else
+        # Default escape behavior
+        zle send-break
+    fi
+}
+
+# Handle other keys that should exit selection mode
+function _copilot_self_insert() {
+    if [[ "$ZSH_COPILOT_SELECTION_MODE" == "true" ]]; then
+        _exit_selection_mode
+    fi
+    zle self-insert
+}
+
+function _copilot_backward_delete_char() {
+    if [[ "$ZSH_COPILOT_SELECTION_MODE" == "true" ]]; then
+        _exit_selection_mode
+    fi
+    zle backward-delete-char
+}
+
+function _copilot_delete_char() {
+    if [[ "$ZSH_COPILOT_SELECTION_MODE" == "true" ]]; then
+        _exit_selection_mode
+    fi
+    zle delete-char
+}
+
+# Handle left/right arrows to exit selection and allow normal cursor movement
+function _copilot_forward_char() {
+    if [[ "$ZSH_COPILOT_SELECTION_MODE" == "true" ]]; then
+        _exit_selection_mode
+    fi
+    zle forward-char
+}
+
+function _copilot_backward_char() {
+    if [[ "$ZSH_COPILOT_SELECTION_MODE" == "true" ]]; then
+        _exit_selection_mode
+    fi
+    zle backward-char
 }
 
 
@@ -169,8 +389,7 @@ function _show_loading_animation() {
 
 function _suggest_ai() {
     #### Prepare environment
-    local openai_api_url=${OPENAI_API_URL:-"api.openai.com"}
-    local anthropic_api_url=${ANTHROPIC_API_URL:-"api.anthropic.com"}
+    local openai_api_url=${ZSH_COPILOT_OPENAI_API_URL:-"api.openai.com"}
 
     local context_info=""
     if [[ "$ZSH_COPILOT_SEND_CONTEXT" == 'true' ]]; then
@@ -190,9 +409,8 @@ function _suggest_ai() {
     ##### Get input
     rm -f /tmp/zsh_copilot_suggestion
     local input=$(echo "${BUFFER:0:$CURSOR}" | tr '\n' ';')
-    input=$(echo "$input" | sed 's/"/\\"/g')
 
-    _zsh_autosuggest_clear
+    _safe_zsh_autosuggest_clear
 
     local full_prompt=$(echo "$ZSH_COPILOT_SYSTEM_PROMPT $context_info" | tr -d '\n')
 
@@ -204,49 +422,115 @@ function _suggest_ai() {
     local response_code=$?
 
     if [[ "$ZSH_COPILOT_DEBUG" == 'true' ]]; then
-        echo "{\"date\":\"$(date)\",\"log\":\"Fetched message\",\"input\":\"$input\",\"response\":\"$response_code\",\"message\":\"$message\"}" >> /tmp/zsh-copilot.log
+        echo "{\"date\":\"$(date)\",\"log\":\"Loading animation finished\",\"input\":\"$input\",\"response_code\":\"$response_code\"}" >> /tmp/zsh-copilot.log
     fi
 
     if [[ ! -f /tmp/zsh_copilot_suggestion ]]; then
-        _zsh_autosuggest_clear
+        _safe_zsh_autosuggest_clear
+        if [[ "$ZSH_COPILOT_DEBUG" == 'true' ]]; then
+            echo "{\"date\":\"$(date)\",\"log\":\"Suggestion file not found\"}" >> /tmp/zsh-copilot.log
+        fi
         echo $(cat /tmp/.zsh_copilot_error 2>/dev/null || echo "No suggestion available at this time. Please try again later.")
         return 1
     fi
 
     local message=$(cat /tmp/zsh_copilot_suggestion)
-
-    ##### Process response
-
-    local first_char=${message:0:1}
-    local suggestion=${message:1:${#message}}
     
     if [[ "$ZSH_COPILOT_DEBUG" == 'true' ]]; then
-        echo "{\"date\":\"$(date)\",\"log\":\"Suggestion extracted.\",\"input\":\"$input\",\"response\":\"$response\",\"first_char\":\"$first_char\",\"suggestion\":\"$suggestion\",\"data\":\"$data\"}" >> /tmp/zsh-copilot.log
+        echo "{\"date\":\"$(date)\",\"log\":\"Read message from file\",\"message_length\":\"${#message}\",\"first_100_chars\":\"$(echo "$message" | head -c 100)\"}" >> /tmp/zsh-copilot.log
     fi
 
-    ##### And now, let's actually show the suggestion to the user!
+    ##### Process JSON response
 
-    if [[ "$first_char" == '=' ]]; then
-        # Reset user input
-        BUFFER=""
-        CURSOR=0
+    # Validate JSON format
+    if ! echo "$message" | jq empty 2>/dev/null; then
+        if [[ "$ZSH_COPILOT_DEBUG" == 'true' ]]; then
+            echo "{\"date\":\"$(date)\",\"log\":\"Invalid JSON format\",\"message\":\"$message\"}" >> /tmp/zsh-copilot.log
+        fi
+        echo "Error: Invalid JSON response from AI"
+        return 1
+    fi
 
-        zle -U "$suggestion"
-    elif [[ "$first_char" == '+' ]]; then
-        _zsh_autosuggest_suggest "$suggestion"
+    # Parse suggestions
+    local suggestions_array=()
+    while IFS= read -r suggestion; do
+        local command=$(echo "$suggestion" | jq -r '.command')
+        suggestions_array+=("$command")
+    done < <(echo "$message" | jq -c '.suggestions[]')
+
+    if [[ ${#suggestions_array[@]} -eq 0 ]]; then
+        echo "No suggestions available"
+        return 1
+    fi
+
+    if [[ "$ZSH_COPILOT_DEBUG" == 'true' ]]; then
+        echo "{\"date\":\"$(date)\",\"log\":\"Suggestions parsed\",\"input\":\"$input\",\"suggestions_count\":\"${#suggestions_array[@]}\",\"message_content\":\"$(echo "$message" | head -c 200)\"}" >> /tmp/zsh-copilot.log
+    fi
+
+    ##### Enter selection mode and display suggestions
+
+    ZSH_COPILOT_SELECTION_MODE=true
+    ZSH_COPILOT_SUGGESTIONS=("${suggestions_array[@]}")
+    ZSH_COPILOT_SELECTED_INDEX=0
+    ZSH_COPILOT_ORIGINAL_BUFFER="$BUFFER"
+
+    # Set the first suggestion as current buffer (ZSH arrays are 1-based)
+    BUFFER="${suggestions_array[1]}"
+    CURSOR=${#BUFFER}
+
+    # Display the selection interface
+    _display_suggestions "$message" 0
+    
+    if [[ "$ZSH_COPILOT_DEBUG" == 'true' ]]; then
+        echo "{\"date\":\"$(date)\",\"log\":\"Suggestions displayed in status line\"}" >> /tmp/zsh-copilot.log
     fi
 }
 
 function zsh-copilot() {
     echo "ZSH Copilot is now active. Press $ZSH_COPILOT_KEY to get suggestions."
     echo ""
+    echo "Usage:"
+    echo "    1. Press $ZSH_COPILOT_KEY to get AI suggestions"
+    echo "    2. Use ↑/↓ or Ctrl+P/Ctrl+N to navigate between suggestions"
+    echo "    3. Press Enter to accept selected suggestion"
+    echo "    4. Press ESC to cancel and restore original input"
+    echo "    5. Press any other key (letters, arrows, etc.) to exit and continue editing"
+    echo ""
     echo "Configurations:"
     echo "    - ZSH_COPILOT_KEY: Key to press to get suggestions (default: ^z, value: $ZSH_COPILOT_KEY)."
-    echo "    - ZSH_COPILOT_SEND_CONTEXT: If \`true\`, zsh-copilot will send context information (whoami, shell, pwd, etc.) to the AI model (default: true, value: $ZSH_COPILOT_SEND_CONTEXT)."
-    echo "    - ZSH_COPILOT_AI_PROVIDER: AI provider to use ('openai' or 'anthropic', value: $ZSH_COPILOT_AI_PROVIDER)."
+    echo "    - ZSH_COPILOT_SEND_CONTEXT: If true, send context information to AI (default: true, value: $ZSH_COPILOT_SEND_CONTEXT)."
+    echo "    - ZSH_COPILOT_OPENAI_API_KEY: OpenAI API key (required)."
+    echo "    - ZSH_COPILOT_OPENAI_API_URL: OpenAI API base URL (default: api.openai.com)."
     echo "    - ZSH_COPILOT_SYSTEM_PROMPT: System prompt to use for the AI model (uses a built-in prompt by default)."
+    echo "    - ZSH_COPILOT_DEBUG: Enable debug logging to /tmp/zsh-copilot.log (default: false)."
 }
 
 zle -N _suggest_ai
 bindkey "$ZSH_COPILOT_KEY" _suggest_ai
+
+# Bind navigation keys for suggestion selection
+zle -N _copilot_down
+zle -N _copilot_up
+zle -N _copilot_ctrl_n
+zle -N _copilot_ctrl_p
+zle -N _copilot_accept_line
+
+zle -N _copilot_escape
+zle -N _copilot_self_insert
+zle -N _copilot_backward_delete_char
+zle -N _copilot_delete_char
+zle -N _copilot_forward_char
+zle -N _copilot_backward_char
+
+bindkey "^[[B" _copilot_down      # Down arrow
+bindkey "^[[A" _copilot_up        # Up arrow  
+bindkey "^[[C" _copilot_forward_char    # Right arrow
+bindkey "^[[D" _copilot_backward_char   # Left arrow
+bindkey "^N" _copilot_ctrl_n      # Ctrl+N
+bindkey "^P" _copilot_ctrl_p      # Ctrl+P
+bindkey "^M" _copilot_accept_line # Enter key
+bindkey "^[" _copilot_escape      # ESC key
+bindkey "^H" _copilot_backward_delete_char    # Backspace
+bindkey "^?" _copilot_backward_delete_char    # Delete (some terminals)
+bindkey "^[[3~" _copilot_delete_char          # Delete key
 
