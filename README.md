@@ -1,78 +1,162 @@
 **NOTICE**: I'm slowly migrating my repositories to my own Git server. Please visit this repository at [https://git.myzel394.app/Myzel394/zsh-copilot](https://git.myzel394.app/Myzel394/zsh-copilot) for the latest updates.
 
-# zsh-copilot
+# ZSH Copilot - Enhanced Multi-Option Version
 
-Get suggestions **truly** in your shell. No `suggest` bullshit. Just press `CTRL + Z` and get your suggestion.
+An enhanced version of [zsh-copilot](https://github.com/Myzel394/zsh-copilot) with **multiple AI suggestions** and **interactive selection**.
 
-https://github.com/Myzel394/zsh-copilot/assets/50424412/ed2bc8ac-ce49-4012-ab73-53cf6f3151a2
+## 🚀 Key Improvements Over Original
 
-## Installation
+This fork transforms the original single-suggestion zsh-copilot into a **multi-option AI assistant** with enhanced user interaction:
 
-### Dependencies
+### ✨ Major Features Added
 
-Please make sure you have the following dependencies installed:
+#### 🎯 **Multiple AI Suggestions**
+- **Original**: Returns only 1 command suggestion
+- **Enhanced**: Provides 2-4 relevant command options to choose from
+- Each suggestion includes both command and description
 
-* [zsh-autosuggestions](https://github.com/zsh-users/zsh-autosuggestions)
-* [jq](https://github.com/jqlang/jq)
-* [curl](https://github.com/curl/curl)
+#### 🎮 **Interactive Selection Interface** 
+- **Original**: Automatically inserts single suggestion
+- **Enhanced**: Interactive menu for browsing options
+  - `↑/↓` or `Ctrl+P/Ctrl+N` to navigate between suggestions
+  - `Enter` to accept selected suggestion
+  - `ESC` to cancel and restore original input
+  - Any other key exits selection mode
 
-### Oh My Zsh
+#### 📺 **Improved Display**
+- **Original**: Single line auto-completion
+- **Enhanced**: Multi-line status display with clear formatting
+  - Each suggestion on separate line
+  - `▶` indicator for current selection
+  - Command and description separated by `#`
+  - Real-time command line updates
 
-1. Clone `zsh-copilot` into `$ZSH_CUSTOM/plugins` (by default ~/.config/oh-my-zsh/custom/plugins)
+#### 🔧 **API & Technical Improvements**
+- **Streamlined API Support**: Removed Anthropic, focused on OpenAI
+- **Function Calling**: Uses OpenAI function calling for structured responses
+- **Better Error Handling**: Enhanced JSON parsing and error messages
+- **Improved Debugging**: More detailed logging for troubleshooting
 
-```sh
-git clone https://git.myzel394.app/Myzel394/zsh-copilot ${ZSH_CUSTOM:-~/.config/oh-my-zsh/custom}/plugins/zsh-copilot
+## 📖 Usage
+
+1. **Start typing a command** (e.g., `ffmpeg convert video`)
+2. **Press `Ctrl+Z`** to get AI suggestions
+3. **Navigate options** with `↑/↓` or `Ctrl+P/Ctrl+N`
+4. **Watch command line update** in real-time as you navigate
+5. **Press `Enter`** to accept or `ESC` to cancel
+
+### Example Interface
+```
+AI Suggestions (↑/↓ navigate, Enter select, ESC cancel):
+  1. ffmpeg -i input.mp4 -c:v libx264 output.mp4 # Convert video with H.264
+▶ 2. ffmpeg -i input.mp4 -vf scale=1280:720 output.mp4 # Resize video to 720p  
+  3. ffmpeg -i input.mp4 -c:a aac -b:a 128k output.mp4 # Convert audio to AAC
+  4. ffmpeg -i input.mp4 -ss 00:01:00 -t 00:00:30 output.mp4 # Extract 30s clip
 ```
 
-2. Add `zsh-copilot` to the plugins array in your `.zshrc` file:
+## 🛠 Installation
+
+1. **Clone this repository**:
+   ```bash
+   git clone https://github.com/YOUR_USERNAME/zsh-copilot-enhanced ~/.config/zsh-copilot
+   ```
+
+2. **Set your OpenAI API key**:
+   ```bash
+   export ZSH_COPILOT_OPENAI_API_KEY="your-api-key"
+   ```
+
+3. **Load the plugin** in your `.zshrc`:
+   ```bash
+   source ~/.config/zsh-copilot/zsh-copilot.plugin.zsh
+   ```
+
+## ⚙️ Configuration
 
 ```bash
-plugins=( 
-    # your other plugins...
-    zsh-autosuggestions
-)
+# Key binding (default: Ctrl+Z)
+export ZSH_COPILOT_KEY="^z"
+
+# Include system context (default: true)
+export ZSH_COPILOT_SEND_CONTEXT=true
+
+# OpenAI API configuration
+export ZSH_COPILOT_OPENAI_API_KEY="your-key"
+export ZSH_COPILOT_OPENAI_API_URL="api.openai.com"  # optional
+
+# Debug logging (default: false)
+export ZSH_COPILOT_DEBUG=true  # Logs to /tmp/zsh-copilot.log
 ```
 
-### Manual Installation
+## 🔄 Changes from Original
 
-```sh
-git clone https://git.myzel394.app/Myzel394/zsh-copilot ~/.config/zsh-copilot
-echo "source ~/.config/zsh-copilot/zsh-copilot.plugin.zsh" >> ~/.zshrc
-```
+### Removed Features
+- ❌ Anthropic API support (simplified to OpenAI only)
+- ❌ Single suggestion auto-completion
+- ❌ Chinese language interface
 
-## Configuration
+### Added Features  
+- ✅ Multi-option suggestion system (2-4 options)
+- ✅ Interactive navigation with arrow keys
+- ✅ Real-time command line preview
+- ✅ Enhanced error handling and debugging
+- ✅ Function calling for reliable JSON responses
+- ✅ Improved display formatting with `#` separators
+- ✅ English-only interface for international compatibility
 
-You need to have an API key for either OpenAI or Anthropic to use this plugin. Expose this via the appropriate environment variable:
+### Technical Improvements
+- 🔧 **Robust JSON Parsing**: Function calling ensures consistent response format
+- 🔧 **Better Error Messages**: Clear feedback via `zle -M` status display
+- 🔧 **ZSH Array Compatibility**: Fixed 1-based array indexing issues
+- 🔧 **Enhanced Debugging**: Detailed logging with message validation
 
-For OpenAI (default):
-```sh
-export OPENAI_API_KEY=<your-openai-api-key>
-```
+## 📋 TODO & Future Features
 
-For Anthropic:
-```sh
-export ANTHROPIC_API_KEY=<your-anthropic-api-key>
-```
+### 🎯 **Enhanced Context Awareness**
+- [ ] **Command History Integration**: Include recent executed commands in AI context
+- [ ] **Output Analysis**: Send previous command outputs to help AI understand current state
+- [ ] **Error Context**: Include error messages from failed commands for better troubleshooting suggestions
+- [ ] **Working Directory Context**: Enhanced directory-specific suggestions based on file types and project structure
 
-You can configure the AI provider using the `ZSH_COPILOT_AI_PROVIDER` variable:
+### 🚀 **Advanced AI Features**
+- [ ] **Multi-step Command Sequences**: AI suggests command pipelines and workflows
+- [ ] **Personalized Suggestions**: Learn from user's command patterns and preferences
+- [ ] **Smart Follow-up**: Context-aware suggestions based on previous command results
+- [ ] **Error Recovery**: Automatic suggestions when commands fail
 
-```sh
-export ZSH_COPILOT_AI_PROVIDER="openai"  # or "anthropic"
-```
+### 🎨 **UI/UX Improvements**
+- [ ] **Color Themes**: Customizable color schemes for better terminal integration
+- [ ] **Preview Mode**: Show expected command output before execution
+- [ ] **Keyboard Shortcuts**: More navigation options (J/K vim-style, numbers for direct selection)
+- [ ] **Smart Truncation**: Better handling of long commands in display
 
-Other configuration options:
+### 🔧 **Technical Enhancements**
+- [ ] **Local AI Support**: Integration with local models (Ollama, etc.)
+- [ ] **Caching System**: Cache frequent suggestions for faster response
+- [ ] **Plugin Integration**: Better compatibility with other ZSH plugins
+- [ ] **Performance Optimization**: Reduce latency and improve responsiveness
 
-- `ZSH_COPILOT_KEY`: Key to press to get suggestions (default: ^z)
-- `ZSH_COPILOT_SEND_CONTEXT`: If `true`, zsh-copilot will send context information to the AI model (default: true)
-- `ZSH_COPILOT_DEBUG`: Enable debug logging (default: false)
+### 📊 **Analytics & Learning**
+- [ ] **Usage Statistics**: Track which suggestions are most helpful
+- [ ] **Success Rate Monitoring**: Learn from accepted vs rejected suggestions
+- [ ] **Context Effectiveness**: Measure how command history improves suggestion quality
 
-To see all available configurations and their current values, run:
+## 🤝 Contributing
 
-```sh
-zsh-copilot
-```
+This project builds upon the excellent foundation of [Myzel394's zsh-copilot](https://github.com/Myzel394/zsh-copilot). 
 
-## Usage
+Feel free to submit issues and pull requests to further improve the multi-option AI experience! Priority areas for contribution:
+- **Command History Integration** (highest priority)
+- **Output Analysis Features**
+- **UI/UX Improvements**
+- **Performance Optimizations**
 
-Type in your command or your message and press `CTRL + Z` to get your suggestion!
+## 📄 License
+
+Same as original project - see the [original repository](https://github.com/Myzel394/zsh-copilot) for license details.
+
+## 🙏 Credits
+
+- **Original Project**: [zsh-copilot by Myzel394](https://github.com/Myzel394/zsh-copilot)
+- **Enhanced Version**: Multi-option interface and interactive features
 
